@@ -15,7 +15,7 @@
 Download the `mcpena` script, make it executable, and place it in your system's bin folder so it can be called from anywhere.
 
 ```bash
-curl -O https://raw.githubusercontent.com/salmankalista/podman-auto-services/main/mcpena
+curl -O https://raw.githubusercontent.com/salmankalista/podman-auto-services/master/mcpena
 chmod +x mcpena
 sudo mv mcpena /usr/local/bin/
 ```

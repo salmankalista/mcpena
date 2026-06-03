@@ -103,19 +103,34 @@ log_info "Detected User Level: $([ "$IS_ROOT" = "true" ] && echo "root" || echo 
 
 # 3. Engine Detection
 ENGINE="$FORCE_ENGINE"
+PODMAN_TYPE="container"
 if [ -z "$ENGINE" ]; then
     log_info "Detecting container engine for '$CONTAINER'..."
-    if command -v podman >/dev/null 2>&1 && podman inspect "$CONTAINER" >/dev/null 2>&1; then
-        ENGINE="podman"
-    elif command -v docker >/dev/null 2>&1 && docker inspect "$CONTAINER" >/dev/null 2>&1; then
+    if command -v podman >/dev/null 2>&1; then
+        if podman container inspect "$CONTAINER" >/dev/null 2>&1; then
+            ENGINE="podman"
+        elif podman pod inspect "$CONTAINER" >/dev/null 2>&1; then
+            ENGINE="podman"
+            PODMAN_TYPE="pod"
+        fi
+    fi
+    if [ -z "$ENGINE" ] && command -v docker >/dev/null 2>&1 && docker inspect "$CONTAINER" >/dev/null 2>&1; then
         ENGINE="docker"
-    else
-        log_err "Could not find container '$CONTAINER' in Podman or Docker."
+    fi
+    if [ -z "$ENGINE" ]; then
+        log_err "Could not find container/pod '$CONTAINER' in Podman or Docker."
         exit 1
+    fi
+elif [ "$ENGINE" = "podman" ]; then
+    if podman pod inspect "$CONTAINER" >/dev/null 2>&1; then
+        PODMAN_TYPE="pod"
     fi
 fi
 
 log_info "Target Engine: $ENGINE"
+if [ "$ENGINE" = "podman" ]; then
+    log_info "Target Type: $PODMAN_TYPE"
+fi
 
 # ===============================
 # EXECUTION LOGIC
@@ -194,16 +209,32 @@ handle_podman() {
             podman generate systemd --name "$CONTAINER" > "$svc_dir/$svc_name"
         else
             log_info "Using manual systemd unit generation (Podman v5+ / Quadlet fallback)..."
+            local exec_start="/usr/bin/podman start -a $CONTAINER"
+            local exec_stop="/usr/bin/podman stop -t 10 $CONTAINER"
+            local restart="on-failure"
+            local type="Type=simple"
+            local remain=""
+            
+            if [ "$PODMAN_TYPE" = "pod" ]; then
+                exec_start="/usr/bin/podman pod start $CONTAINER"
+                exec_stop="/usr/bin/podman pod stop -t 10 $CONTAINER"
+                type="Type=oneshot"
+                remain="RemainAfterExit=yes"
+                restart="no"
+            fi
+            
             cat <<EOF > "$svc_dir/$svc_name"
 [Unit]
-Description=Podman container $CONTAINER
+Description=Podman $PODMAN_TYPE $CONTAINER
 Wants=network-online.target
 After=network-online.target
 
 [Service]
-Restart=on-failure
-ExecStart=/usr/bin/podman start -a $CONTAINER
-ExecStop=/usr/bin/podman stop -t 10 $CONTAINER
+$type
+$remain
+Restart=$restart
+ExecStart=$exec_start
+ExecStop=$exec_stop
 
 [Install]
 WantedBy=$([ "$IS_ROOT" = "true" ] && echo "multi-user.target" || echo "default.target")
@@ -227,14 +258,23 @@ EOF
             log_err "OpenRC generation is currently only supported for root."
             exit 1
         fi
+        local exec_start="/usr/bin/podman start -a $CONTAINER"
+        local exec_stop="/usr/bin/podman stop -t 10 $CONTAINER"
+        local bg="true"
+        
+        if [ "$PODMAN_TYPE" = "pod" ]; then
+            exec_start="/usr/bin/podman pod start $CONTAINER"
+            exec_stop="/usr/bin/podman pod stop -t 10 $CONTAINER"
+            bg="false"
+        fi
+        
         local svc_path="/etc/init.d/$CONTAINER"
         cat <<EOF > "$svc_path"
 #!/sbin/openrc-run
-description="Podman container $CONTAINER"
+description="Podman $PODMAN_TYPE $CONTAINER"
 
-command="/usr/bin/podman"
-command_args="start -a $CONTAINER"
-command_background="true"
+command="$exec_start"
+command_background="$bg"
 pidfile="/run/${CONTAINER}.pid"
 
 depend() {
@@ -242,8 +282,8 @@ depend() {
 }
 
 stop() {
-    ebegin "Stopping container $CONTAINER"
-    /usr/bin/podman stop -t 10 $CONTAINER
+    ebegin "Stopping $PODMAN_TYPE $CONTAINER"
+    $exec_stop
     eend \$?
 }
 EOF

@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# mcpena - Make Container/Pod Enabled
+# Author: abgtg
+# Support & Donation: https://ko-fi.com/abgtg | https://saweria.co/abggtg
+
+set -e
+
+# ===============================
+# GLOBAL VARIABLES
+# ===============================
+CONTAINER=""
+ENABLE_NOW="false"
+FORCE_ENGINE=""
+FORCE_METHOD=""
+
+# ===============================
+# HELPER FUNCTIONS
+# ===============================
+print_help() {
+    echo "mcpena - Make Container/Pod Enabled"
+    echo "Usage: mcpena [CONTAINER_NAME] [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --now                 Start the service immediately after enabling"
+    echo "  --engine [ENGINE]     Force container engine ('podman' or 'docker')"
+    echo "  --method [METHOD]     For Docker: 'policy' (default) or 'systemd'"
+    echo "  -h, --help            Show this help message"
+    echo ""
+}
+
+log_info() { echo -e "\e[34m[INFO]\e[0m $1"; }
+log_succ() { echo -e "\e[32m[SUCCESS]\e[0m $1"; }
+log_warn() { echo -e "\e[33m[WARNING]\e[0m $1"; }
+log_err()  { echo -e "\e[31m[ERROR]\e[0m $1"; }
+
+# ===============================
+# ARGUMENT PARSING
+# ===============================
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --now)
+            ENABLE_NOW="true"
+            shift
+            ;;
+        --engine)
+            FORCE_ENGINE="$2"
+            shift 2
+            ;;
+        --method)
+            FORCE_METHOD="$2"
+            shift 2
+            ;;
+        -h|--help)
+            print_help
+            exit 0
+            ;;
+        -*)
+            log_err "Unknown option: $1"
+            print_help
+            exit 1
+            ;;
+        *)
+            if [ -z "$CONTAINER" ]; then
+                CONTAINER="$1"
+            else
+                log_err "Too many arguments. Expected 1 container name."
+                print_help
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$CONTAINER" ]; then
+    log_err "Container name is required."
+    print_help
+    exit 1
+fi
+
+# ===============================
+# DETECTION LOGIC
+# ===============================
+
+# 1. User Detection
+IS_ROOT="false"
+if [ "$(id -u)" -eq 0 ]; then
+    IS_ROOT="true"
+fi
+
+# 2. Init System Detection
+INIT_SYSTEM="unknown"
+if command -v systemctl >/dev/null 2>&1 && [ -d "/run/systemd/system" ]; then
+    INIT_SYSTEM="systemd"
+elif command -v rc-update >/dev/null 2>&1; then
+    INIT_SYSTEM="openrc"
+elif command -v chkconfig >/dev/null 2>&1 || command -v update-rc.d >/dev/null 2>&1; then
+    INIT_SYSTEM="sysvinit"
+fi
+
+log_info "Detected Init System: $INIT_SYSTEM"
+log_info "Detected User Level: $([ "$IS_ROOT" = "true" ] && echo "root" || echo "non-root")"
+
+# 3. Engine Detection
+ENGINE="$FORCE_ENGINE"
+if [ -z "$ENGINE" ]; then
+    log_info "Detecting container engine for '$CONTAINER'..."
+    if command -v podman >/dev/null 2>&1 && podman inspect "$CONTAINER" >/dev/null 2>&1; then
+        ENGINE="podman"
+    elif command -v docker >/dev/null 2>&1 && docker inspect "$CONTAINER" >/dev/null 2>&1; then
+        ENGINE="docker"
+    else
+        log_err "Could not find container '$CONTAINER' in Podman or Docker."
+        exit 1
+    fi
+fi
+
+log_info "Target Engine: $ENGINE"
+
+# ===============================
+# EXECUTION LOGIC
+# ===============================
+
+handle_docker() {
+    local method="${FORCE_METHOD:-policy}"
+    
+    if [ "$method" = "policy" ]; then
+        log_info "Applying Docker restart policy 'unless-stopped'..."
+        docker update --restart unless-stopped "$CONTAINER"
+        log_succ "Docker container '$CONTAINER' will restart automatically."
+        if [ "$ENABLE_NOW" = "true" ]; then
+            docker start "$CONTAINER"
+        fi
+    elif [ "$method" = "systemd" ]; then
+        if [ "$INIT_SYSTEM" != "systemd" ]; then
+            log_err "Method 'systemd' requires systemd as the init system."
+            exit 1
+        fi
+        
+        local svc_name="docker-${CONTAINER}.service"
+        local svc_dir="/etc/systemd/system"
+        
+        if [ "$IS_ROOT" = "false" ]; then
+            log_warn "Creating user-level systemd service for Docker. Ensure Docker supports rootless mode."
+            svc_dir="$HOME/.config/systemd/user"
+            mkdir -p "$svc_dir"
+        fi
+        
+        cat <<EOF > "$svc_dir/$svc_name"
+[Unit]
+Description=Docker container $CONTAINER
+Requires=docker.service
+After=docker.service
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/docker start -a $CONTAINER
+ExecStop=/usr/bin/docker stop -t 10 $CONTAINER
+
+[Install]
+WantedBy=$([ "$IS_ROOT" = "true" ] && echo "multi-user.target" || echo "default.target")
+EOF
+        
+        if [ "$IS_ROOT" = "true" ]; then
+            systemctl daemon-reload
+            systemctl enable "$svc_name"
+            [ "$ENABLE_NOW" = "true" ] && systemctl start "$svc_name"
+        else
+            systemctl --user daemon-reload
+            systemctl --user enable "$svc_name"
+            [ "$ENABLE_NOW" = "true" ] && systemctl --user start "$svc_name"
+            loginctl enable-linger "$USER"
+        fi
+        log_succ "Docker container '$CONTAINER' enabled via systemd!"
+    else
+        log_err "Unknown Docker method: $method"
+        exit 1
+    fi
+}
+
+handle_podman() {
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        local svc_name="container-${CONTAINER}.service"
+        local svc_dir="/etc/systemd/system"
+        
+        if [ "$IS_ROOT" = "false" ]; then
+            svc_dir="$HOME/.config/systemd/user"
+            mkdir -p "$svc_dir"
+        fi
+        
+        # Try legacy podman generate systemd first
+        if podman generate systemd --name "$CONTAINER" >/dev/null 2>&1; then
+            log_info "Using 'podman generate systemd' to create service..."
+            podman generate systemd --name "$CONTAINER" > "$svc_dir/$svc_name"
+        else
+            log_info "Using manual systemd unit generation (Podman v5+ / Quadlet fallback)..."
+            cat <<EOF > "$svc_dir/$svc_name"
+[Unit]
+Description=Podman container $CONTAINER
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Restart=on-failure
+ExecStart=/usr/bin/podman start -a $CONTAINER
+ExecStop=/usr/bin/podman stop -t 10 $CONTAINER
+
+[Install]
+WantedBy=$([ "$IS_ROOT" = "true" ] && echo "multi-user.target" || echo "default.target")
+EOF
+        fi
+        
+        if [ "$IS_ROOT" = "true" ]; then
+            systemctl daemon-reload
+            systemctl enable "$svc_name"
+            [ "$ENABLE_NOW" = "true" ] && systemctl start "$svc_name"
+        else
+            systemctl --user daemon-reload
+            systemctl --user enable "$svc_name"
+            [ "$ENABLE_NOW" = "true" ] && systemctl --user start "$svc_name"
+            loginctl enable-linger "$USER"
+        fi
+        log_succ "Podman container '$CONTAINER' enabled via systemd!"
+        
+    elif [ "$INIT_SYSTEM" = "openrc" ]; then
+        if [ "$IS_ROOT" = "false" ]; then
+            log_err "OpenRC generation is currently only supported for root."
+            exit 1
+        fi
+        local svc_path="/etc/init.d/$CONTAINER"
+        cat <<EOF > "$svc_path"
+#!/sbin/openrc-run
+description="Podman container $CONTAINER"
+
+command="/usr/bin/podman"
+command_args="start -a $CONTAINER"
+command_background="true"
+pidfile="/run/${CONTAINER}.pid"
+
+depend() {
+    need net
+}
+
+stop() {
+    ebegin "Stopping container $CONTAINER"
+    /usr/bin/podman stop -t 10 $CONTAINER
+    eend \$?
+}
+EOF
+        chmod +x "$svc_path"
+        rc-update add "$CONTAINER" default
+        [ "$ENABLE_NOW" = "true" ] && rc-service "$CONTAINER" start
+        log_succ "Podman container '$CONTAINER' enabled via OpenRC!"
+        
+    else
+        log_err "Init system '$INIT_SYSTEM' is not fully supported yet for Podman."
+        exit 1
+    fi
+}
+
+if [ "$ENGINE" = "docker" ]; then
+    handle_docker
+elif [ "$ENGINE" = "podman" ]; then
+    handle_podman
+else
+    log_err "Unknown engine: $ENGINE"
+    exit 1
+fi
+
+echo ""
+echo -e "\e[36m=========================================================\e[0m"
+echo -e "\e[36m \e[1mThank you for using mcpena!\e[0m"
+echo -e "\e[36m If this script helped you, consider buying me a coffee ☕:\e[0m"
+echo -e "\e[36m - Ko-fi   : https://ko-fi.com/abgtg\e[0m"
+echo -e "\e[36m - Saweria : https://saweria.co/abggtg\e[0m"
+echo -e "\e[36m=========================================================\e[0m"
+echo ""

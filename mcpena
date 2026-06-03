@@ -12,6 +12,7 @@ CONTAINER=""
 ENABLE_NOW="false"
 FORCE_ENGINE=""
 FORCE_METHOD=""
+FORCE_NAME=""
 
 # ===============================
 # HELPER FUNCTIONS
@@ -21,6 +22,7 @@ print_help() {
     echo "Usage: mcpena [CONTAINER_NAME] [OPTIONS]"
     echo ""
     echo "Options:"
+    echo "  --name [NAME]         Set custom service name (default: auto-simplified)"
     echo "  --now                 Start the service immediately after enabling"
     echo "  --engine [ENGINE]     Force container engine ('podman' or 'docker')"
     echo "  --method [METHOD]     For Docker: 'policy' (default) or 'systemd'"
@@ -38,6 +40,10 @@ log_err()  { echo -e "\e[31m[ERROR]\e[0m $1"; }
 # ===============================
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --name)
+            FORCE_NAME="$2"
+            shift 2
+            ;;
         --now)
             ENABLE_NOW="true"
             shift
@@ -132,6 +138,19 @@ if [ "$ENGINE" = "podman" ]; then
     log_info "Target Type: $PODMAN_TYPE"
 fi
 
+# 4. Service Name Calculation
+if [ -n "$FORCE_NAME" ]; then
+    BASE_SVC_NAME="$FORCE_NAME"
+else
+    # Strip common prefixes for a simpler name
+    BASE_SVC_NAME="$CONTAINER"
+    BASE_SVC_NAME="${BASE_SVC_NAME#container-}"
+    BASE_SVC_NAME="${BASE_SVC_NAME#docker-}"
+    BASE_SVC_NAME="${BASE_SVC_NAME#pod_}"
+fi
+
+log_info "Target Service Name: $BASE_SVC_NAME"
+
 # ===============================
 # EXECUTION LOGIC
 # ===============================
@@ -152,13 +171,18 @@ handle_docker() {
             exit 1
         fi
         
-        local svc_name="docker-${CONTAINER}.service"
+        local svc_name="${BASE_SVC_NAME}.service"
         local svc_dir="/etc/systemd/system"
         
         if [ "$IS_ROOT" = "false" ]; then
             log_warn "Creating user-level systemd service for Docker. Ensure Docker supports rootless mode."
             svc_dir="$HOME/.config/systemd/user"
             mkdir -p "$svc_dir"
+        fi
+        
+        if [ -f "$svc_dir/$svc_name" ]; then
+            log_err "Service file $svc_dir/$svc_name already exists! Please remove it manually to update, or use --name <custom_name>."
+            exit 1
         fi
         
         cat <<EOF > "$svc_dir/$svc_name"
@@ -195,12 +219,17 @@ EOF
 
 handle_podman() {
     if [ "$INIT_SYSTEM" = "systemd" ]; then
-        local svc_name="container-${CONTAINER}.service"
+        local svc_name="${BASE_SVC_NAME}.service"
         local svc_dir="/etc/systemd/system"
         
         if [ "$IS_ROOT" = "false" ]; then
             svc_dir="$HOME/.config/systemd/user"
             mkdir -p "$svc_dir"
+        fi
+        
+        if [ -f "$svc_dir/$svc_name" ]; then
+            log_err "Service file $svc_dir/$svc_name already exists! Please remove it manually to update, or use --name <custom_name>."
+            exit 1
         fi
         
         # Try legacy podman generate systemd first
@@ -268,7 +297,13 @@ EOF
             bg="false"
         fi
         
-        local svc_path="/etc/init.d/$CONTAINER"
+        local svc_path="/etc/init.d/$BASE_SVC_NAME"
+        
+        if [ -f "$svc_path" ]; then
+            log_err "Service file $svc_path already exists! Please remove it manually to update, or use --name <custom_name>."
+            exit 1
+        fi
+        
         cat <<EOF > "$svc_path"
 #!/sbin/openrc-run
 description="Podman $PODMAN_TYPE $CONTAINER"

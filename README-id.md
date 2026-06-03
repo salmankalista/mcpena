@@ -15,7 +15,7 @@
 Unduh script `mcpena`, beri hak akses *executable*, dan letakkan di folder bin sistem agar bisa dipanggil darimana saja.
 
 ```bash
-curl -O https://raw.githubusercontent.com/salmankalista/podman-auto-services/master/mcpena
+curl -O https://raw.githubusercontent.com/salmankalista/mcpena/master/mcpena
 chmod +x mcpena
 sudo mv mcpena /usr/local/bin/
 ```

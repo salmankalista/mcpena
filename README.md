@@ -9,6 +9,7 @@
 3. **Podman Version Compatibility**: Supports the legacy `podman generate systemd` command (for older podman versions) and features a fallback mechanism for newer podman versions (v5+) where the command is deprecated/removed.
 4. **User Level Detection**: Automatically adjusts execution to either `root` (system-wide service) or a regular user (`rootless` using `systemctl --user`).
 5. **Docker Customization**: Allows you to choose whether to use Docker's native *Restart Policy* (recommended by default) or force the creation of a *Systemd Service* for Docker.
+6. **Smart Naming & Collision Guard**: Automatically simplifies generated service names (stripping `container-` or `pod_`), prevents accidental overwrites, and supports fully custom service names via the `--name` flag.
 
 ## Installation
 
@@ -34,9 +35,12 @@ mcpena your-container-name --now
 
 ### Advanced Options
 
-You can explicitly define the container engine or method if needed:
+You can explicitly define the container engine, method, or service name if needed:
 
 ```bash
+# Set a custom service name (e.g., creates 'my-app.service' instead of 'web-server.service')
+mcpena web-server --name my-app
+
 # Force using Podman engine
 mcpena web-server --engine podman
 

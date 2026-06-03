@@ -1,7 +1,10 @@
 # mcpena (Make Container/Pod Enabled)
 *Baca dalam bahasa lain: [English](README.md)*
 
-`mcpena` adalah sebuah shell script untuk mengotomatisasi proses pembuatan *service startup* (agar otomatis berjalan saat *boot/reboot*) untuk container atau pod yang dibuat menggunakan **Podman** atau **Docker**. 
+**Mengapa tool ini ada padahal kita bisa menggunakan `--restart=always`?**
+Walaupun fitur bawaan tersebut cukup untuk skenario sederhana, ia mulai goyah di skenario yang *robust*. Ekosistem **Podman** (terutama *rootless*) sangat bergantung pada integrasi `systemd` dan `loginctl enable-linger` agar bisa *autostart* dengan andal dan mendukung fitur `podman auto-update`. Selain itu, Sysadmin tingkat lanjut seringkali membutuhkan kontrol dependensi yang ketat (misal: container hanya boleh menyala *setelah* service VPN siap).
+
+`mcpena` hadir sebagai solusi jitu dengan bertindak layaknya **Tool Orkestrasi Systemd**. Script ini menjembatani sistem init OS Anda dengan *container engine* (**Podman** maupun **Docker**), menjadikan container Anda sebagai *first-class citizen* yang jauh lebih tangguh di server Anda.
 
 ## Fitur Utama
 1. **Deteksi OS dan Sistem Init**: Mendukung deteksi otomatis sistem operasi Linux Anda (mendukung deteksi `systemd`, `OpenRC`, dan `SysVinit`).

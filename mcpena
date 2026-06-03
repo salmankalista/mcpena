@@ -323,8 +323,8 @@ stop() {
 }
 EOF
         chmod +x "$svc_path"
-        rc-update add "$CONTAINER" default
-        [ "$ENABLE_NOW" = "true" ] && rc-service "$CONTAINER" start
+        rc-update add "$BASE_SVC_NAME" default
+        [ "$ENABLE_NOW" = "true" ] && rc-service "$BASE_SVC_NAME" start
         log_succ "Podman container '$CONTAINER' enabled via OpenRC!"
         
     else
